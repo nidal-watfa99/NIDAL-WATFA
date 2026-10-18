@@ -1,1 +1,73 @@
+name: Unzip, build & deploy to GitHub Pages
 
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip source archive
+        run: |
+          ZIP=$(ls -t ./*.zip 2>/dev/null | head -n 1)
+          if [ -z "$ZIP" ]; then echo "::error::No .zip file found in repo root"; exit 1; fi
+          echo "Unzipping: $ZIP"
+          unzip -q "$ZIP" -d _src
+          APP_DIR=$(dirname "$(find _src -name package.json -not -path '*/node_modules/*' | head -n 1)")
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+          echo "Project folder: $APP_DIR"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ env.APP_DIR }}
+        run: npm ci
+
+      - name: Sync public projects
+        working-directory: ${{ env.APP_DIR }}
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/sync-projects.mjs
+
+      - name: Test
+        working-directory: ${{ env.APP_DIR }}
+        run: npm test
+
+      - name: Build
+        working-directory: ${{ env.APP_DIR }}
+        run: npm run build
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ env.APP_DIR }}/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
